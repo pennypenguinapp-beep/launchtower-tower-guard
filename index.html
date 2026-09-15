@@ -57,6 +57,10 @@
   .card .big{font-size:15px;color:var(--txt);margin-bottom:16px;font-weight:600;}
   .card .big b{color:var(--gold);}
   .card .btn{margin:6px auto;justify-content:center;min-width:180px;}
+  .card .btn.play{font-size:18px;padding:14px 22px;border-radius:12px;min-width:220px;background:#12261a;border-color:var(--accent);color:var(--green);box-shadow:0 0 0 2px rgba(63,185,80,.25);}
+  .card .keys{font-size:11px;color:var(--dim);margin-top:10px;}
+  #pauseBtn{cursor:pointer;border:1px solid var(--line);background:var(--panel2);color:var(--txt);
+    padding:4px 10px;border-radius:8px;font-weight:700;font-size:12px;user-select:none;}
   .legend{display:flex;gap:8px;justify-content:center;margin:12px 0 4px;}
   .legend .lg{display:flex;flex-direction:column;align-items:center;gap:4px;font-size:10px;color:var(--dim);}
   .legend .dot{width:16px;height:16px;border-radius:4px;}
@@ -72,6 +76,7 @@
 <div id="wrap">
   <header>
     <div class="title">TOWER <span>GUARD</span></div>
+    <button id="pauseBtn" title="Pause (P)">❚❚ Pause</button>
     <div class="stats">
       <div class="stat"><span class="ico" style="background:var(--gold)"></span>Gold <b id="sGold">0</b></div>
       <div class="stat"><span class="ico" style="background:var(--red)"></span>Lives <b id="sLives">0</b></div>
@@ -94,7 +99,7 @@
     <div class="btn upg" id="bUpg">Upgrade $</div>
     <div class="btn speed" id="bSpeed">x1</div>
     <div class="btn start" id="bStart">Start Wave</div>
-    <div class="hint" id="hint">Select a tower, tap a tile to build. Tap a tower to upgrade.</div>
+    <div class="hint" id="hint">Tap a tower type, tap a tile to build. Tap a tower to upgrade. 1/2/3 select · U upgrade · S speed · Space start wave · P pause.</div>
   </div>
 
   <footer>
@@ -158,6 +163,7 @@ let spawnQueue, spawnTimer, waveActive, gameOver, gameWon;
 let selectedType=0, selectedTower=null, speed=1;
 let mouse={x:-999,y:-999,inside:false};
 let last=0;
+let paused=false;
 
 try{ best=parseInt(localStorage.getItem("towerguard_best")||"0",10)||0; }catch(e){ best=0; }
 
@@ -201,6 +207,34 @@ function burst(x,y,color,n){
     particles.push({x,y,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp,life:0.4+Math.random()*0.3,color,r:1.5+Math.random()*2.5});
   }
 }
+
+// ---------- Audio (WebAudio, no files) ----------
+let AC=null;
+function audio(){
+  if(!AC){ try{ AC=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){ AC=null; } }
+  if(AC && AC.state==="suspended"){ AC.resume().catch(()=>{}); }
+  return AC;
+}
+function beep(freq,dur,type,vol,slide){
+  const ac=audio(); if(!ac) return;
+  try{
+    const o=ac.createOscillator(), g=ac.createGain();
+    o.type=type||"square"; o.frequency.value=freq;
+    if(slide) o.frequency.exponentialRampToValueAtTime(Math.max(40,freq+slide), ac.currentTime+dur);
+    g.gain.value=vol||0.05;
+    g.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime+dur);
+    o.connect(g); g.connect(ac.destination);
+    o.start(); o.stop(ac.currentTime+dur);
+  }catch(e){}
+}
+const sfx={
+  build:()=>beep(520,0.09,"square",0.05,200),
+  kill:()=>beep(880,0.08,"square",0.05,-300),
+  hit:()=>beep(160,0.12,"sawtooth",0.06,-80),
+  wave:()=>{ beep(440,0.1,"triangle",0.05,220); setTimeout(()=>beep(660,0.12,"triangle",0.05,220),110); },
+  win:()=>{ [523,659,784,1046].forEach((f,i)=>setTimeout(()=>beep(f,0.16,"triangle",0.06),i*130)); },
+  lose:()=>{ [330,262,196].forEach((f,i)=>setTimeout(()=>beep(f,0.2,"sawtooth",0.05),i*160)); }
+};
 
 // ---------- Spawning ----------
 function startWave(){
@@ -258,6 +292,7 @@ function update(dt){
       e.dead=true;
       lives-= e.boss?5:1;
       burst(e.x,e.y,"#ff5d5d",10);
+      sfx.hit();
       addFloater(e.x,e.y,"-1","#ff5d5d");
       if(lives<=0){ lives=0; endGame(false); }
     }
@@ -348,6 +383,7 @@ function hitEnemy(e,p,fromSplash){
   if(e.hp<=0 && !e.dead){
     e.dead=true;
     gold+=e.reward; score+=e.reward*2;
+    sfx.kill();
     burst(e.x,e.y,e.color, e.boss?26:10);
     addFloater(e.x,e.y,"+$"+e.reward,"#f2c14e");
     updateHUD();
@@ -357,6 +393,7 @@ function hitEnemy(e,p,fromSplash){
 function endGame(won){
   if(gameOver||gameWon) return;
   if(won) gameWon=true; else gameOver=true;
+  if(won) sfx.win(); else sfx.lose();
   if(score>best){ best=score; try{localStorage.setItem("towerguard_best",String(best));}catch(e){} }
   showEnd(won);
 }
@@ -535,6 +572,7 @@ function handleTap(ev){
         range:def.range, rate:def.rate, dmg:def.dmg,
         proj:def.proj, splash:def.splash, slow:def.slow, color:def.color
       });
+      sfx.build();
       burst(cx*TILE+TILE/2, cy*TILE+TILE/2, def.color, 8);
       updateHUD();
     } else {
@@ -545,9 +583,9 @@ function handleTap(ev){
   // tapped empty non-buildable -> deselect
   selectedTower=null; syncButtons(); updateHUD();
 }
-cv.addEventListener("click",e=>handleTap(e));
+cv.addEventListener("click",e=>{ audio(); handleTap(e); });
 cv.addEventListener("touchstart",e=>{
-  if(e.touches.length){ e.preventDefault(); const t=e.touches[0]; handleTap(t); }
+  if(e.touches.length){ e.preventDefault(); audio(); const t=e.touches[0]; handleTap(t); }
 },{passive:false});
 
 function selectType(i){
@@ -596,42 +634,82 @@ function showStart(){
   overlay.classList.remove("hidden");
   card.innerHTML=
     '<h1>TOWER <span>GUARD</span></h1>'+
-    '<p>Defend the path for <b style="color:#e6edf3">10 waves</b>. Build towers on the dark tiles, upgrade them, and stop every enemy before it reaches the exit.</p>'+
+    '<p>Pick a tower, tap a dark tile to build it, and stop all <b style="color:#e6edf3">10 waves</b> before they reach the exit.</p>'+
     '<div class="legend">'+
       '<div class="lg"><span class="dot" style="background:#58a6ff"></span>Arrow</div>'+
       '<div class="lg"><span class="dot" style="background:#bc8cff"></span>Cannon</div>'+
       '<div class="lg"><span class="dot" style="background:#f2c14e"></span>Frost</div>'+
     '</div>'+
     '<div class="big">Best score: <b>'+best+'</b></div>'+
-    '<button class="btn start" id="ovStart">Start Game</button>';
+    '<button class="btn play" id="ovStart">&#9654; PLAY</button>'+
+    '<div class="keys">Tap / click to build &middot; 1-2-3 towers &middot; U upgrade &middot; Space start wave &middot; P pause</div>';
   document.getElementById("ovStart").onclick=startGame;
 }
 function showEnd(won){
   overlay.classList.remove("hidden");
+  const newBest=score>=best && score>0;
   card.innerHTML=
     '<h1>'+(won?'<span>VICTORY!</span>':'<span>DEFEATED</span>')+'</h1>'+
     '<p>'+(won?'You held all 10 waves. The path is safe.':'The enemies broke through. Try a different layout!')+'</p>'+
-    '<div class="big">Score: <b>'+score+'</b><br>Best: <b>'+best+'</b></div>'+
-    '<button class="btn start" id="ovRestart">Play Again</button>';
+    '<div class="big">Score: <b>'+score+'</b><br>Best: <b>'+best+'</b>'+(newBest?'<br><span style="color:#f2c14e">NEW BEST!</span>':'')+'</div>'+
+    '<button class="btn play" id="ovRestart">&#9654; PLAY AGAIN</button>';
   document.getElementById("ovRestart").onclick=startGame;
 }
 function startGame(){
+  audio();
   reset();
+  paused=false; syncPause();
   overlay.classList.add("hidden");
   document.getElementById("bStart").textContent="Start Wave 1";
   document.getElementById("bStart").style.opacity="1";
   selectType(0);
 }
 
+// ---------- Pause ----------
+const pauseBtn=document.getElementById("pauseBtn");
+function syncPause(){
+  pauseBtn.textContent=paused?"▶ Resume":"❚❚ Pause";
+  pauseBtn.style.borderColor=paused?"var(--gold)":"";
+  pauseBtn.style.color=paused?"var(--gold)":"";
+}
+function togglePause(){
+  if(gameOver||gameWon) return;
+  paused=!paused;
+  syncPause();
+}
+pauseBtn.onclick=togglePause;
+document.addEventListener("visibilitychange",()=>{
+  if(document.hidden && !gameOver && !gameWon && !paused){ paused=true; syncPause(); }
+});
+
+// ---------- Keyboard ----------
+document.addEventListener("keydown",e=>{
+  const k=e.key.toLowerCase();
+  if(k==="1") selectType(0);
+  else if(k==="2") selectType(1);
+  else if(k==="3") selectType(2);
+  else if(k==="u") document.getElementById("bUpg").click();
+  else if(k==="s") bSpeed.click();
+  else if(k===" "){ e.preventDefault(); if(!overlay.classList.contains("hidden")) startGame(); else startWave(); }
+  else if(k==="p"||k==="escape") togglePause();
+});
+
 // ---------- Loop ----------
 function loop(ts){
   if(!last) last=ts;
   let dt=(ts-last)/1000; last=ts;
   if(dt>0.05) dt=0.05;
-  if(!gameOver && !gameWon){
+  if(!gameOver && !gameWon && !paused){
     for(let i=0;i<speed;i++) update(dt);
   }
   draw();
+  if(paused){
+    ctx.fillStyle="rgba(8,11,16,.55)"; ctx.fillRect(0,0,W,H);
+    ctx.fillStyle="#e6edf3"; ctx.font="bold 34px sans-serif"; ctx.textAlign="center"; ctx.textBaseline="middle";
+    ctx.fillText("PAUSED", W/2, H/2-12);
+    ctx.font="14px sans-serif"; ctx.fillStyle="#8b98a9";
+    ctx.fillText("Press P or tap Resume to continue", W/2, H/2+20);
+  }
   requestAnimationFrame(loop);
 }
 
